@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>EPUB Word Frequency Counter</title>
+    <link href="https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css" rel="stylesheet">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
+</head>
+<body>
+    <div class="container mt-5">
+        <h1 class="text-center mb-4">EPUB Word Frequency Counter</h1>
+        <div class="row justify-content-center">
+            <div class="col-md-6">
+                <div class="form-group">
+                    <input type="file" class="form-control-file" id="fileInput" accept=".epub">
+                </div>
+                <div class="form-group">
+                    <label for="sourceLanguage">Select Source Language:</label>
+                    <select class="form-control" id="sourceLanguage">
+                        <option value="it" selected>Italian</option>
+                        <option value="en">English</option>
+                        <option value="es">Spanish</option>
+                        <option value="fr">French</option>
+                        <option value="de">German</option>
+                        <!-- Add more languages as needed -->
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="targetLanguage">Select Target Language:</label>
+                    <select class="form-control" id="targetLanguage">
+                        <option value="en" selected>English</option>
+                        <option value="it">Italian</option>
+                        <option value="es">Spanish</option>
+                        <option value="fr">French</option>
+                        <option value="de">German</option>
+                        <!-- Add more languages as needed -->
+                    </select>
+                </div>
+                <div class="form-group">
+                    <button class="btn btn-primary btn-block" onclick="processEPUB()">Process EPUB</button>
+                </div>
+                <div class="form-group">
+                    <button class="btn btn-success btn-block" onclick="downloadExcel()">Download Excel</button>
+                </div>
+                <pre id="output" class="mt-4"></pre>
+            </div>
+        </div>
+    </div>
+    <script>
+        let wordFrequency = {};
+        let epubFileName = '';
+
+        async function processEPUB() {
+            const fileInput = document.getElementById('fileInput');
+            if (!fileInput.files.length) {
+                alert('Please select an EPUB file.');
+                return;
+            }
+
+            const file = fileInput.files[0];
+            const sourceLang = document.getElementById('sourceLanguage').value;
+            const targetLang = document.getElementById('targetLanguage').value;
+            epubFileName = file.name.replace(/\.epub$/i, `_${sourceLang}_${targetLang}.xlsx`); // Set the Excel file name based on EPUB file name and language codes
+            const arrayBuffer = await file.arrayBuffer();
+            const zip = await JSZip.loadAsync(arrayBuffer);
+            const outputElement = document.getElementById('output');
+            wordFrequency = {};
+
+            const getFileText = async (file) => {
+                if (zip.file(file)) {
+                    const text = await zip.file(file).async("string");
+                    const parser = new DOMParser();
+                    const doc = parser.parseFromString(text, "application/xhtml+xml");
+                    return doc.body.textContent || "";
+                }
+                return "";
+            };
+
+            const container = await zip.file("META-INF/container.xml").async("string");
+            const parser = new DOMParser();
+            const containerDoc = parser.parseFromString(container, "application/xml");
+            const rootfile = containerDoc.querySelector("rootfile").getAttribute("full-path");
+            const content = await zip.file(rootfile).async("string");
+            const contentDoc = parser.parseFromString(content, "application/xml");
+            const spine = contentDoc.querySelectorAll("spine > itemref");
+            const manifest = Array.from(contentDoc.querySelectorAll("manifest > item")).reduce((acc, item) => {
+                acc[item.getAttribute("id")] = item.getAttribute("href");
+                return acc;
+            }, {});
+
+            const rootfilePath = rootfile.substring(0, rootfile.lastIndexOf('/') + 1);
+
+            for (const itemref of spine) {
+                const id = itemref.getAttribute("idref");
+                const href = rootfilePath + manifest[id];
+                const text = await getFileText(href);
+
+                const words = text.replace(/[^\p{L}\p{N}]+/gu, ' ').toLowerCase().split(/\s+/);
+
+                words.forEach(word => {
+                    if (word) {
+                        wordFrequency[word] = (wordFrequency[word] || 0) + 1;
+                    }
+                });
+            }
+
+            const sortedFrequency = Object.entries(wordFrequency).sort((a, b) => b[1] - a[1]);
+            let output = 'Word Frequency Table:\n\n';
+            sortedFrequency.forEach(([word, count]) => {
+                output += `${word}: ${count}\n`;
+            });
+
+            outputElement.textContent = output;
+        }
+
+        function downloadExcel() {
+            const sortedFrequency = Object.entries(wordFrequency).sort((a, b) => b[1] - a[1]);
+            const sourceLang = document.getElementById('sourceLanguage').value;
+            const targetLang = document.getElementById('targetLanguage').value;
+            const worksheetData = [
+                ['Count', `Word (${sourceLang.toUpperCase()})`, `Translation (${targetLang.toUpperCase()})`, 'Notes']
+            ];
+            
+            sortedFrequency.forEach(([word, count], index) => {
+                if (index === 0) {
+                    worksheetData.push([count, word, { f: `GOOGLETRANSLATE(B2,"${sourceLang}","${targetLang}")` }, '<--Copy this cell below to translate more words']);
+                } else if ((index + 1) % 50 === 0) {
+                    worksheetData.push([count, word, { f: `GOOGLETRANSLATE(B${index + 2},"${sourceLang}","${targetLang}")` }, '']);
+                } else {
+                    worksheetData.push([count, word, '', '']);
+                }
+            });
+
+            const worksheet = XLSX.utils.aoa_to_sheet(worksheetData);
+            const workbook = XLSX.utils.book_new();
+            XLSX.utils.book_append_sheet(workbook, worksheet, 'Word Frequency');
+
+            XLSX.writeFile(workbook, epubFileName);
+        }
+    </script>
+</body>
+</html>
